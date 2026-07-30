@@ -1,5 +1,9 @@
-"""전국 권역 주간 디제스트 markdown 빌드 — 전국 헤더 → 서울 상세 → 권역 요약."""
-from realestate_bot import config, indicators, location_enrich
+"""전국 권역 주간 디제스트 markdown 빌드 — 전국 헤더 → 서울 상세 → 권역 요약.
+
+헤더 표현과 섹션 순서는 `variation`이 주차 시드로 결정적으로 변주한다
+(같은 주 재실행 시 동일 결과, 주마다 구성 이동).
+"""
+from realestate_bot import config, indicators, location_enrich, variation
 
 _METRO_ORDER = ["부산", "대구", "인천", "광주", "대전", "울산"]
 
@@ -40,13 +44,8 @@ def _render_highlights(lines: list, highlights: list, limit: int):
             lines.append(f"  - {loc_badge}")
 
 
-def _render_seoul(lines: list, s: dict):
-    lines.append("## 서울 (상세)")
-    lines.append("")
-    lines.append(f"신규 **{s['new_total']}건**, 신고가 **{s['high_total']}건"
-                 f"({s['high_pct']:.1f}%)**, 신저점 **{s['low_total']}건**.")
-    lines.append("")
-    lines.append("### 구별 온도차 (뜨거운 순)")
+def _seoul_table(lines: list, s: dict, v: dict):
+    lines.append(f"### {v['seoul_table']}")
     lines.append("")
     lines.append("| 구 | 신규 | 신고가 비중 | 중앙가 변화(믹스보정) | 비고 |")
     lines.append("|----|----|----|----|----|")
@@ -55,44 +54,69 @@ def _render_seoul(lines: list, s: dict):
         lines.append(f"| {gu} | {g['new_count']} | {g['breadth']['high_pct']:.0f}% "
                      f"| {_fmt_pct(g.get('mix_change'))} | {flag} |")
     lines.append("")
-    if s["highlights"]:
-        lines.append("### 신고가·신저점 단지")
-        lines.append("")
-        _render_highlights(lines, s["highlights"], 15)
-        lines.append("")
+
+
+def _seoul_highlights(lines: list, s: dict, v: dict):
+    lines.append(f"### {v['seoul_highlights']}")
+    lines.append("")
+    _render_highlights(lines, s["highlights"], 15)
+    lines.append("")
+
+
+def _seoul_jeonse(lines: list, s: dict, v: dict):
     rated = {gu: r for gu, r in (s.get("jeonse") or {}).items() if r is not None}
-    if rated:
-        lines.append("### 전세가율 (갭투자 위험 지표)")
+    lines.append(f"### {v['seoul_jeonse']}")
+    lines.append("")
+    js = s.get("jeonse_seoul")
+    if js is not None:
+        lines.append(f"서울 평균 전세가율 **{js:.1f}%** (70%↑면 갭투자 위험 신호). 높은 구 순:")
+    lines.append("")
+    lines.append("| 구 | 전세가율 |")
+    lines.append("|----|----|")
+    for gu, r in sorted(rated.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+        lines.append(f"| {gu} | {r:.1f}%{' ⚠️' if r >= 70 else ''} |")
+    lines.append("")
+
+
+def _seoul_officetel(lines: list, s: dict, v: dict):
+    lines.append(f"### {v['seoul_officetel']}")
+    lines.append("")
+    if s.get("officetel_total"):
+        oftl = s.get("officetel") or {}
+        active = sorted(((g, c) for g, c in oftl.items() if c), key=lambda x: -x[1])[:5]
+        top = ", ".join(f"{g} {c}건" for g, c in active)
+        lines.append(f"매매 **{s['officetel_total']}건**"
+                     + (f" — 활발: {top}" if top else "") + ".")
         lines.append("")
-        js = s.get("jeonse_seoul")
-        if js is not None:
-            lines.append(f"서울 평균 전세가율 **{js:.1f}%** (70%↑면 갭투자 위험 신호). 높은 구 순:")
+    if s.get("officetel_rent_total"):
+        lines.append(f"전월세 **{s['officetel_rent_total']}건** "
+                     f"(전세 {s.get('officetel_rent_jeonse', 0)}건 · "
+                     f"월세 {s.get('officetel_rent_wolse', 0)}건).")
         lines.append("")
-        lines.append("| 구 | 전세가율 |")
-        lines.append("|----|----|")
-        for gu, r in sorted(rated.items(), key=lambda kv: kv[1], reverse=True)[:10]:
-            lines.append(f"| {gu} | {r:.1f}%{' ⚠️' if r >= 70 else ''} |")
-        lines.append("")
+
+
+def _render_seoul(lines: list, s: dict, v: dict):
+    lines.append(f"## {v['seoul']}")
+    lines.append("")
+    lines.append(f"신규 **{s['new_total']}건**, 신고가 **{s['high_total']}건"
+                 f"({s['high_pct']:.1f}%)**, 신저점 **{s['low_total']}건**.")
+    lines.append("")
+    # 읽는 흐름이 깨지지 않게 두 묶음 안에서만 회전한다.
+    # 앞: 아파트 본편(구별 표 · 신고가 단지) / 뒤: 부가 지표(전세가율 · 오피스텔).
+    head = [_seoul_table] + ([_seoul_highlights] if s["highlights"] else [])
+    tail = []
+    if any(r is not None for r in (s.get("jeonse") or {}).values()):
+        tail.append(_seoul_jeonse)
     if s.get("officetel_total") or s.get("officetel_rent_total"):
-        lines.append("### 오피스텔 시장")
-        lines.append("")
-        if s.get("officetel_total"):
-            oftl = s.get("officetel") or {}
-            active = sorted(((g, c) for g, c in oftl.items() if c), key=lambda x: -x[1])[:5]
-            top = ", ".join(f"{g} {c}건" for g, c in active)
-            lines.append(f"매매 **{s['officetel_total']}건**"
-                         + (f" — 활발: {top}" if top else "") + ".")
-            lines.append("")
-        if s.get("officetel_rent_total"):
-            lines.append(f"전월세 **{s['officetel_rent_total']}건** "
-                         f"(전세 {s.get('officetel_rent_jeonse', 0)}건 · "
-                         f"월세 {s.get('officetel_rent_wolse', 0)}건).")
-            lines.append("")
+        tail.append(_seoul_officetel)
+    for render in (variation.rotate(v["seed"], "seoul_head", head)
+                   + variation.rotate(v["seed"], "seoul_tail", tail)):
+        render(lines, s, v)
 
 
 def _render_group(lines: list, title: str, stats: dict, highlights: list,
-                  show_officetel: bool):
-    lines.append(f"## {title}")
+                  show_officetel: bool, suffix: str = ""):
+    lines.append(f"## {title}{suffix}")
     lines.append("")
     parts = [f"신규 **{stats['new_total']}건**",
              f"신고가 {stats['high_total']}건({stats['high_pct']:.1f}%)"]
@@ -118,7 +142,8 @@ def build_digest(d: dict) -> str:
     nat = d["national"]
     groups = d.get("groups") or {}
     hbg = d.get("highlights_by_group") or {}
-    lines = [f"## 전국 아파트 시장 흐름 — {d['week_label']}", ""]
+    v = variation.headers(d["week_label"])
+    lines = [f"## {v['national']}", ""]
 
     if nat["new_total"] == 0:
         lines.append("이번 주 신규 신고된 거래가 없습니다.")
@@ -127,9 +152,9 @@ def build_digest(d: dict) -> str:
         return "\n".join(lines)
 
     # 전국 헤더
-    lines.append(f"이번 주 전국 신규 신고 **{nat['new_total']}건**, "
-                 f"신고가 **{nat['high_total']}건({nat['high_pct']:.1f}%)**, "
-                 f"신저점 **{nat['low_total']}건**.")
+    lines.append(v["national_lead"].format(
+        new=nat["new_total"], high=nat["high_total"],
+        pct=f"{nat['high_pct']:.1f}", low=nat["low_total"]))
     lines.append("")
     order = [g for g in ["서울", "경기"] if g in groups] \
         + [g for g in _METRO_ORDER if g in groups] \
@@ -139,25 +164,36 @@ def build_digest(d: dict) -> str:
         lines.append(f"권역별: {summary}.")
         lines.append("")
 
-    # 서울 상세
+    # 서울 상세 (항상 선두 — 상세 스코프이므로 순서 변주 대상 아님)
     if d.get("seoul") and d["seoul"].get("new_total"):
-        _render_seoul(lines, d["seoul"])
+        _render_seoul(lines, d["seoul"], v)
 
-    # 경기 요약
-    if "경기" in groups:
-        _render_group(lines, "경기", groups["경기"], hbg.get("경기", []), show_officetel=True)
+    def _gyeonggi(out):
+        _render_group(out, "경기", groups["경기"], hbg.get("경기", []),
+                      show_officetel=True, suffix=v["group_suffix"])
 
-    # 6대 광역시 요약 (시별)
-    metro_present = [g for g in _METRO_ORDER if g in groups]
-    if metro_present:
-        lines.append("## 6대 광역시")
-        lines.append("")
+    def _metros(out):
+        out.append(f"## {v['metro']}")
+        out.append("")
         for city in metro_present:
-            _render_group(lines, city, groups[city], hbg.get(city, []), show_officetel=True)
+            _render_group(out, city, groups[city], hbg.get(city, []), show_officetel=True)
 
-    # 세종 요약
+    def _sejong(out):
+        _render_group(out, "세종", groups["세종"], hbg.get("세종", []),
+                      show_officetel=False, suffix=v["group_suffix"])
+
+    # 경기·광역시는 주마다 순서 회전, 세종(최소 물량)은 항상 마지막
+    metro_present = [g for g in _METRO_ORDER if g in groups]
+    blocks = []
+    if "경기" in groups:
+        blocks.append(_gyeonggi)
+    if metro_present:
+        blocks.append(_metros)
+    blocks = variation.rotate(v["seed"], "region_blocks", blocks)
     if "세종" in groups:
-        _render_group(lines, "세종", groups["세종"], hbg.get("세종", []), show_officetel=False)
+        blocks.append(_sejong)
+    for render in blocks:
+        render(lines)
 
     lines.append("> 데이터: 국토교통부 실거래가. 최근 월은 신고 지연으로 미확정이며, "
                  "중앙가 변화는 동일 평형밴드 매칭(믹스보정) 기준.")

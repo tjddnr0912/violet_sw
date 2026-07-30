@@ -63,9 +63,10 @@ def test_national_header_and_sections_present():
 
 def test_seoul_detail_unchanged_sections():
     md = digest.build_digest(_input())
-    assert "구별 온도차" in md
+    # 헤더 문구는 주차별로 변주되므로 표 헤더(불변)로 검증
+    assert "| 구 | 신규 | 신고가 비중 | 중앙가 변화(믹스보정) | 비고 |" in md
     assert digest._baseline_label() in md           # 신고가 기준 라벨
-    assert "전세가율" in md and "오피스텔" in md
+    assert "전세가율" in md and "오피스텔" in md      # 지표명 자체는 변주 대상 아님
     assert "전월세" in md and "월세 17건" in md       # 서울 오피스텔 전월세 (기존 기능)
 
 

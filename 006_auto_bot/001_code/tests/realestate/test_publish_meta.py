@@ -8,14 +8,18 @@ def test_week_of_month():
     assert week_of_month(date(2026, 6, 30)) == "6월 5주차"
 
 
-def test_build_title_prefix_and_headline():
+def test_build_title_is_headline_only():
+    """날짜·주차 프리픽스 없이 헤드라인 그대로 (자동 생성 티 제거)."""
     t = build_title(date(2026, 6, 6), "전국 신고가 21%, 수도권 과열")
-    assert t == "2026-06-06, 6월 1주차 전국 신고가 21%, 수도권 과열"
+    assert t == "전국 신고가 21%, 수도권 과열"
+    assert "2026-06-06" not in t and "주차" not in t
 
 
 def test_build_title_fallback_when_empty():
+    """헤드라인 부재 시에만 주차 라벨 — 주간 제목 중복 방지."""
     t = build_title(date(2026, 6, 6), "")
-    assert t == "2026-06-06, 6월 1주차 전국 아파트 시장 흐름"
+    assert t == "6월 1주차 전국 아파트 시장 흐름"
+    assert build_title(date(2026, 6, 13), "  ") != t
 
 
 def test_build_labels_7_to_9_and_dynamic():

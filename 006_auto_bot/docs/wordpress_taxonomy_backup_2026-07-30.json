@@ -1,0 +1,401 @@
+{
+  "_note": "grace-moon.com 분류·메뉴 스냅샷 (애드센스 정리 전). 복원용.",
+  "captured_at": "2026-07-30",
+  "site": "https://grace-moon.com",
+  "categories": [
+    {
+      "id": 1,
+      "name": "Uncategorized",
+      "slug": "uncategorized",
+      "parent": 0,
+      "description": "",
+      "count": 0,
+      "link": "https://grace-moon.com/category/uncategorized/",
+      "posts_by_status": {}
+    },
+    {
+      "id": 2,
+      "name": "투자",
+      "slug": "invest",
+      "parent": 0,
+      "description": "",
+      "count": 0,
+      "link": "https://grace-moon.com/category/invest/",
+      "posts_by_status": {}
+    },
+    {
+      "id": 3,
+      "name": "기술",
+      "slug": "tech",
+      "parent": 0,
+      "description": "",
+      "count": 0,
+      "link": "https://grace-moon.com/category/tech/",
+      "posts_by_status": {}
+    },
+    {
+      "id": 4,
+      "name": "기타",
+      "slug": "etc",
+      "parent": 0,
+      "description": "",
+      "count": 0,
+      "link": "https://grace-moon.com/category/etc/",
+      "posts_by_status": {
+        "draft": 1,
+        "private": 2
+      }
+    },
+    {
+      "id": 5,
+      "name": "뉴스",
+      "slug": "news",
+      "parent": 2,
+      "description": "",
+      "count": 0,
+      "link": "https://grace-moon.com/category/invest/news/",
+      "posts_by_status": {
+        "draft": 17,
+        "private": 1
+      }
+    },
+    {
+      "id": 6,
+      "name": "일일시황",
+      "slug": "daily-market",
+      "parent": 2,
+      "description": "",
+      "count": 0,
+      "link": "https://grace-moon.com/category/invest/daily-market/",
+      "posts_by_status": {
+        "draft": 11,
+        "private": 2
+      }
+    },
+    {
+      "id": 7,
+      "name": "섹터",
+      "slug": "sector",
+      "parent": 2,
+      "description": "",
+      "count": 1,
+      "link": "https://grace-moon.com/category/invest/sector/",
+      "posts_by_status": {
+        "publish": 1,
+        "draft": 21
+      }
+    },
+    {
+      "id": 8,
+      "name": "부동산",
+      "slug": "realestate",
+      "parent": 2,
+      "description": "",
+      "count": 7,
+      "link": "https://grace-moon.com/category/invest/realestate/",
+      "posts_by_status": {
+        "publish": 7
+      }
+    },
+    {
+      "id": 9,
+      "name": "SoC",
+      "slug": "soc",
+      "parent": 3,
+      "description": "",
+      "count": 0,
+      "link": "https://grace-moon.com/category/tech/soc/",
+      "posts_by_status": {
+        "draft": 19
+      }
+    },
+    {
+      "id": 10,
+      "name": "SW",
+      "slug": "sw",
+      "parent": 3,
+      "description": "",
+      "count": 0,
+      "link": "https://grace-moon.com/category/tech/sw/",
+      "posts_by_status": {
+        "draft": 3
+      }
+    },
+    {
+      "id": 11,
+      "name": "AI",
+      "slug": "ai",
+      "parent": 3,
+      "description": "",
+      "count": 0,
+      "link": "https://grace-moon.com/category/tech/ai/",
+      "posts_by_status": {
+        "draft": 8,
+        "private": 7
+      }
+    },
+    {
+      "id": 187,
+      "name": "Project",
+      "slug": "project",
+      "parent": 0,
+      "description": "개인 프로젝트 — 직접 만든 자동매매 봇과 RTL 시뮬레이터",
+      "count": 0,
+      "link": "https://grace-moon.com/category/project/",
+      "posts_by_status": {}
+    },
+    {
+      "id": 188,
+      "name": "자동매매",
+      "slug": "auto-trading",
+      "parent": 187,
+      "description": "미장봇 등 자동매매·퀀트 시스템 (실데이터 기반)",
+      "count": 9,
+      "link": "https://grace-moon.com/category/project/auto-trading/",
+      "posts_by_status": {
+        "publish": 9
+      }
+    },
+    {
+      "id": 189,
+      "name": "Vitamin",
+      "slug": "vitamin",
+      "parent": 187,
+      "description": "오픈소스 RTL 시뮬레이터 vitamin 개발 기록",
+      "count": 0,
+      "link": "https://grace-moon.com/category/project/vitamin/",
+      "posts_by_status": {}
+    },
+    {
+      "id": 212,
+      "name": "여행/리뷰",
+      "slug": "travel-review",
+      "parent": 4,
+      "description": "직접 다녀온 장소·여행 후기와 리뷰 (원본 사진 포함)",
+      "count": 2,
+      "link": "https://grace-moon.com/category/etc/travel-review/",
+      "posts_by_status": {
+        "publish": 2
+      }
+    }
+  ],
+  "menus": [
+    {
+      "id": 12,
+      "name": "메인메뉴",
+      "slug": "%eb%a9%94%ec%9d%b8%eb%a9%94%eb%89%b4",
+      "locations": [
+        "primary",
+        "mobile_menu"
+      ],
+      "auto_add": false
+    },
+    {
+      "id": 41,
+      "name": "푸터메뉴",
+      "slug": "%ed%91%b8%ed%84%b0%eb%a9%94%eb%89%b4",
+      "locations": [
+        "footer_menu"
+      ],
+      "auto_add": false
+    }
+  ],
+  "menu_items_menu12": [
+    {
+      "id": 9,
+      "title": "기술",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 3,
+      "parent": 0,
+      "menu_order": 1,
+      "url": "https://grace-moon.com/category/tech/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 10,
+      "title": "AI",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 11,
+      "parent": 9,
+      "menu_order": 2,
+      "url": "https://grace-moon.com/category/tech/ai/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 11,
+      "title": "SoC",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 9,
+      "parent": 9,
+      "menu_order": 3,
+      "url": "https://grace-moon.com/category/tech/soc/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 12,
+      "title": "SW",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 10,
+      "parent": 9,
+      "menu_order": 4,
+      "url": "https://grace-moon.com/category/tech/sw/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 13,
+      "title": "기타",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 4,
+      "parent": 0,
+      "menu_order": 5,
+      "url": "https://grace-moon.com/category/etc/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 14,
+      "title": "투자",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 2,
+      "parent": 0,
+      "menu_order": 6,
+      "url": "https://grace-moon.com/category/invest/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 15,
+      "title": "뉴스",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 5,
+      "parent": 14,
+      "menu_order": 7,
+      "url": "https://grace-moon.com/category/invest/news/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 16,
+      "title": "부동산",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 8,
+      "parent": 14,
+      "menu_order": 8,
+      "url": "https://grace-moon.com/category/invest/realestate/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 17,
+      "title": "섹터",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 7,
+      "parent": 14,
+      "menu_order": 9,
+      "url": "https://grace-moon.com/category/invest/sector/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 18,
+      "title": "일일시황",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 6,
+      "parent": 14,
+      "menu_order": 10,
+      "url": "https://grace-moon.com/category/invest/daily-market/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 436,
+      "title": "Project",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 187,
+      "parent": 0,
+      "menu_order": 11,
+      "url": "https://grace-moon.com/category/project/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 437,
+      "title": "자동매매",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 188,
+      "parent": 436,
+      "menu_order": 12,
+      "url": "https://grace-moon.com/category/project/auto-trading/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 438,
+      "title": "Vitamin",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 189,
+      "parent": 436,
+      "menu_order": 13,
+      "url": "https://grace-moon.com/category/project/vitamin/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    },
+    {
+      "id": 501,
+      "title": "여행/리뷰",
+      "type": "taxonomy",
+      "object": "category",
+      "object_id": 212,
+      "parent": 13,
+      "menu_order": 14,
+      "url": "https://grace-moon.com/category/etc/travel-review/",
+      "target": "",
+      "classes": [
+        ""
+      ]
+    }
+  ]
+}

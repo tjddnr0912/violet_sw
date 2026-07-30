@@ -270,8 +270,8 @@ def test_run_national_scope_publishes(tmp_path, monkeypatch):
 
     assert r["success"] is True
     assert r["blog_url"] == "http://blog/x"
-    # 제목: 날짜, 주차 + AI 헤드라인
-    assert "주차" in captured["title"] and "전국 신고가 테스트 헤드라인" in captured["title"]
+    # 제목: AI 헤드라인만 (날짜·주차 프리픽스 없음)
+    assert captured["title"] == "전국 신고가 테스트 헤드라인"
     # 라벨 7~9개
     assert 7 <= len(captured["labels"]) <= 9
     assert "전국" in captured["labels"]

@@ -12,9 +12,13 @@ def week_of_month(d: date) -> str:
 
 
 def build_title(d: date, headline: str) -> str:
-    """'YYYY-MM-DD, N월 M주차 {헤드라인}'. 헤드라인 비면 fallback."""
-    head = (headline or "").strip() or _HEADLINE_FALLBACK
-    return f"{d.isoformat()}, {week_of_month(d)} {head}"
+    """AI 헤드라인을 그대로 제목으로 쓴다.
+
+    'YYYY-MM-DD, N월 M주차 ' 프리픽스는 매주 같은 자리에 박히는 자동 생성 신호라 제거.
+    헤드라인이 비었을 때만 주차 라벨을 붙여 제목 중복을 막는다.
+    """
+    head = (headline or "").strip()
+    return head or f"{week_of_month(d)} {_HEADLINE_FALLBACK}"
 
 
 def build_labels(groups: dict, hottest_gu: str = None) -> list:
