@@ -122,10 +122,12 @@ def synthesize(store: RealEstateStore, regions: dict, year_month: str) -> dict:
     - officetel: 구별 오피스텔 매매 건수
     - officetel_total: 서울 오피스텔 매매 총건수
     - officetel_rent: 구별 오피스텔 전월세 건수
-    - officetel_rent_total/_jeonse/_wolse: 서울 오피스텔 전월세 총건수·전세·월세
+    - officetel_rent_breakdown: 구별 {jeonse, wolse} — 권역 필터가 가능하도록 구 단위 보존
+    - officetel_rent_total/_jeonse/_wolse: 전 지역 합계(구 단위 합산이 필요하면 breakdown 사용)
     데이터(전세/오피스텔)가 아직 없으면 값은 None/0으로 degrade.
     """
     jeonse, officetel, officetel_rent = {}, {}, {}
+    officetel_rent_breakdown = {}
     o_rent_jeonse = o_rent_wolse = 0
     for gu, code in regions.items():
         tb = store.band_medians(code, year_month, "apartment")
@@ -138,6 +140,7 @@ def synthesize(store: RealEstateStore, regions: dict, year_month: str) -> dict:
         officetel[gu] = sum(v["count"] for v in ob.values())
         rv = store.rent_volume(code, year_month, "officetel")
         officetel_rent[gu] = rv["total"]
+        officetel_rent_breakdown[gu] = {"jeonse": rv["jeonse"], "wolse": rv["wolse"]}
         o_rent_jeonse += rv["jeonse"]
         o_rent_wolse += rv["wolse"]
     ratios = [r for r in jeonse.values() if r is not None]
@@ -147,6 +150,7 @@ def synthesize(store: RealEstateStore, regions: dict, year_month: str) -> dict:
         "officetel": officetel,
         "officetel_total": sum(officetel.values()),
         "officetel_rent": officetel_rent,
+        "officetel_rent_breakdown": officetel_rent_breakdown,
         "officetel_rent_total": o_rent_jeonse + o_rent_wolse,
         "officetel_rent_jeonse": o_rent_jeonse,
         "officetel_rent_wolse": o_rent_wolse,
@@ -295,6 +299,10 @@ class RealEstateBot:
         rated = [r for r in jeonse.values() if r is not None]
         officetel = {gu: c for gu, c in syn["officetel"].items() if gu in seoul_names}
         officetel_rent = {gu: c for gu, c in syn["officetel_rent"].items() if gu in seoul_names}
+        # 전세/월세 내역도 서울 구만 합산 — 총계(서울)와 집계 범위를 맞춘다.
+        # (syn의 officetel_rent_jeonse/_wolse는 전 지역 누적이라 여기 쓰면 합이 안 맞는다.)
+        seoul_rent_bd = [v for gu, v in (syn.get("officetel_rent_breakdown") or {}).items()
+                         if gu in seoul_names]
         r = seoul_rollup or {"new_total": 0, "high_total": 0, "low_total": 0, "high_pct": 0.0}
         return {
             "per_gu": seoul_gu, "highlights": seoul_highlights,
@@ -303,8 +311,8 @@ class RealEstateBot:
             "officetel": officetel, "officetel_total": sum(officetel.values()),
             "officetel_rent": officetel_rent,
             "officetel_rent_total": sum(officetel_rent.values()),
-            "officetel_rent_jeonse": syn.get("officetel_rent_jeonse", 0),
-            "officetel_rent_wolse": syn.get("officetel_rent_wolse", 0),
+            "officetel_rent_jeonse": sum(v["jeonse"] for v in seoul_rent_bd),
+            "officetel_rent_wolse": sum(v["wolse"] for v in seoul_rent_bd),
             "new_total": r["new_total"], "high_total": r["high_total"],
             "low_total": r["low_total"], "high_pct": r["high_pct"],
         }

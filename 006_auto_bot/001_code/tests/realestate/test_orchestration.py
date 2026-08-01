@@ -275,3 +275,39 @@ def test_run_national_scope_publishes(tmp_path, monkeypatch):
     # 라벨 7~9개
     assert 7 <= len(captured["labels"]) <= 9
     assert "전국" in captured["labels"]
+
+
+def test_seoul_officetel_rent_breakdown_matches_total(tmp_path):
+    """서울 오피스텔 전월세: 총계와 전세/월세 내역의 집계 범위가 같아야 한다.
+
+    회귀: 총계는 서울 필터, 내역은 전국 누적이라 3346+9769=13115 vs 총계 5136처럼
+    합이 안 맞는 본문이 발행됐다 (2026-08-01 발견).
+    """
+    from realestate_bot.store import RealEstateStore
+    store = RealEstateStore(str(tmp_path / "seoul_oftl.db"))
+
+    def rent(region, deposit, monthly, day):
+        return {"region_code": region, "apt_name": "O", "dong": "d", "area_sqm": 30.0,
+                "floor": 1, "deposit_10k": deposit, "monthly_rent_10k": monthly,
+                "contract_type": "전세" if monthly == 0 else "월세",
+                "trade_date": f"2026-05-{day}", "build_year": 2018}
+
+    store.insert_new_rents([
+        rent("11680", 8000, 0, 10),      # 서울 강남 전세
+        rent("11680", 1000, 60, 11),     # 서울 강남 월세
+        rent("41135", 5000, 0, 12),      # 경기 성남 분당 전세 (서울 아님)
+        rent("41135", 900, 40, 13),      # 경기 성남 분당 월세 (서울 아님)
+        rent("41135", 900, 40, 14),      # 경기 성남 분당 월세 (서울 아님)
+    ], "officetel")
+
+    regions = {"강남구": "11680", "경기도 성남시 분당구": "41135"}
+    syn = bot.synthesize(store, regions, "202605")
+    block = bot.RealEstateBot.__dict__["_seoul_block"](
+        bot.RealEstateBot(test_mode=True), {}, [], syn, None)
+
+    # 서울만: 전세 1 + 월세 1 = 총 2. 경기 3건은 섞이면 안 된다.
+    assert block["officetel_rent_total"] == 2
+    assert block["officetel_rent_jeonse"] == 1
+    assert block["officetel_rent_wolse"] == 1
+    assert (block["officetel_rent_jeonse"] + block["officetel_rent_wolse"]
+            == block["officetel_rent_total"])
